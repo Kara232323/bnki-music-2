@@ -21,7 +21,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Bot configuration
-ADMIN_IDS = ['@Karan_vi']  # Add your Telegram user ID here
+ADMIN_IDS = [@Karan_vi]  # Add your Telegram user ID here
 SONG_QUEUE = {}
 CURRENT_SONG = {}
 
@@ -259,3 +259,4 @@ def main() -> None:
 
 if __name__ == '__main__':
     main()
+
