@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 # Bot configuration - Get from environment variables
 BOT_TOKEN = os.getenv(8138462822:AAFh8pV4tW2euSuNAnp597-rje3UqFP_Nzg)
 API_ID = os.getenv(29887059)
-API_HASH = os.getenv(8173fb6e839cc131ab2341d59763be60)
+API_HASH = os.getenv("8173fb6e839cc131ab2341d59763be60")
 
 # Admin configuration
 ADMIN_IDS = [int(os.getenv("ADMIN_ID", "0"))] if os.getenv("ADMIN_ID") else []
@@ -248,4 +248,5 @@ def main():
 
 if __name__ == '__main__':
     main()
+
 
