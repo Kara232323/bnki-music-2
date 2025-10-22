@@ -5,6 +5,47 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import yt_dlp
 import requests
+import sys
+
+# Debug environment variables
+print("=" * 60)
+print("CHECKING ENVIRONMENT VARIABLES:")
+print(f"All env vars: {list(os.environ.keys())}")
+print(f"BOT_TOKEN in environ: {'BOT_TOKEN' in os.environ}")
+
+# Try multiple ways to get the token
+BOT_TOKEN = None
+
+# Method 1: os.environ.get
+token1 = os.environ.get("8138462822:AAFh8pV4tW2euSuNAnp597-rje3UqFP_Nzg")
+print(f"Method 1 (os.environ.get): {token1 is not None}")
+
+# Method 2: os.getenv
+token2 = os.getenv("8138462822:AAFh8pV4tW2euSuNAnp597-rje3UqFP_Nzg")
+print(f"Method 2 (os.getenv): {token2 is not None}")
+
+# Method 3: Direct access
+try:
+    token3 = os.environ["8138462822:AAFh8pV4tW2euSuNAnp597-rje3UqFP_Nzg"]
+    print(f"Method 3 (os.environ[]): {token3 is not None}")
+except KeyError:
+    token3 = None
+    print("Method 3 (os.environ[]): KeyError - not found")
+
+# Use whichever method worked
+BOT_TOKEN = token1 or token2 or token3
+
+if BOT_TOKEN:
+    print(f"✅ BOT_TOKEN FOUND! Length: {len(BOT_TOKEN)}")
+    print(f"Preview: {BOT_TOKEN[:15]}...")
+else:
+    print("❌ BOT_TOKEN NOT FOUND!")
+    print("Available environment variables with 'TOKEN' or 'BOT':")
+    matching = [k for k in os.environ.keys() if 'TOKEN' in k.upper() or 'BOT' in k.upper()]
+    print(matching)
+
+print("=" * 60)
+
 
 # Set up logging
 logging.basicConfig(
@@ -217,12 +258,17 @@ def main():
     """Start the bot."""
     # Check for required environment variables
     if not BOT_TOKEN:
-        logger.error("❌ ERROR: BOT_TOKEN not found!")
-        logger.error("Please set BOT_TOKEN in Railway environment variables")
-        return
+        logger.error("=" * 60)
+        logger.error("❌ CRITICAL ERROR: BOT_TOKEN not found!")
+        logger.error("=" * 60)
+        logger.error("Environment variable BOT_TOKEN is missing!")
+        logger.error("Please check Railway Variables tab")
+        logger.error("=" * 60)
+        sys.exit(1)  # Exit with error code
     
     logger.info("🚀 Starting Telegram Music Bot...")
     logger.info(f"📱 Bot Token: {BOT_TOKEN[:10]}...")
+
     
     # Create the Application
     application = Application.builder().token(BOT_TOKEN).build()
@@ -249,6 +295,7 @@ def main():
 
 if __name__ == '__main__':
     main()
+
 
 
 
