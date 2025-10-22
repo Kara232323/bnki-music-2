@@ -1,7 +1,5 @@
-Python 3.8.0 (tags/v3.8.0:fa919fd, Oct 14 2019, 19:37:50) [MSC v.1916 64 bit (AMD64)] on win32
-Type "help", "copyright", "credits" or "license()" for more information.
->>> python-telegram-bot==20.7
+python-telegram-bot==20.7
 yt-dlp==2024.10.7
 python-dotenv==1.0.0
-requests==2.31.0
-aiofiles==23.2.1
+requests
+aiohttp
