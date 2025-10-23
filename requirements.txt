@@ -1,3 +1,6 @@
-python-telegram-bot==20.7
+pyrogram==2.0.106
+py-tgcalls==0.9.7
+yt-dlp
 aiohttp
-certifi
+aiofiles
+python-dotenv
