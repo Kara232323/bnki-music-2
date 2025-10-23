@@ -1,12 +1,3 @@
-# Core bot framework
 python-telegram-bot==20.7
-
-# Video/audio download
-yt-dlp
-
-# HTTP requests
-requests
 aiohttp
-
-# SSL certificates
 certifi
