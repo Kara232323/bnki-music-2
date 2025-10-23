@@ -92,7 +92,7 @@ Enjoy the music! 🎶
 async def play_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle play command."""
     if not context.args:
-        await update.message.reply_text("❌ Please provide a song name!
+await update.message.reply_text("❌ Please provide a song name!\n\nExample: `/play Despacito`", parse_mode='Markdown')
 
 Example: `/play Despacito`", parse_mode='Markdown')
         return
@@ -321,3 +321,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
