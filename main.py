@@ -1,144 +1,210 @@
 #!/usr/bin/env python3
-"""
-Bankai Music Bot - Simple Working Version
-NO complex dependencies, 100% working on Railway!
-"""
+import os, sys, asyncio, logging
+from collections import defaultdict
+from pyrogram import Client, filters
+from pyrogram.types import Message
+from pytgcalls import PyTgCalls
+from pytgcalls.types.input_stream import AudioPiped
+from pytgcalls.types.input_stream.quality import HighQualityAudio
+import yt_dlp
 
-import os
-import logging
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, ContextTypes
-
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-OWNER_USERNAME = os.getenv("OWNER_USERNAME", "bankai_owner")
+API_ID = int(os.getenv("API_ID", "0"))
+API_HASH = os.getenv("API_HASH")
+SESSION_STRING = os.getenv("SESSION_STRING")
 
-def get_youtube_url(query: str):
-    return f"https://www.youtube.com/results?search_query={query.replace(' ', '+')}"
+if not all([BOT_TOKEN, API_ID, API_HASH, SESSION_STRING]):
+    logger.error("Missing: BOT_TOKEN, API_ID, API_HASH, or SESSION_STRING")
+    sys.exit(1)
 
-def get_spotify_url(query: str):
-    return f"https://open.spotify.com/search/{query.replace(' ', '%20')}"
+logger.info("Initializing clients...")
+app = Client("bankai", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+user = Client("assistant", api_id=API_ID, api_hash=API_HASH, session_string=SESSION_STRING)
+calls = PyTgCalls(user)
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+queues = defaultdict(list)
+now_playing = {}
+
+async def get_audio(query: str):
     try:
-        btns = [[InlineKeyboardButton("👑 Owner", url=f"https://t.me/{OWNER_USERNAME}")]]
-        welcome = (
-            "⚔️ **Bankai Music Bot** ⚔️\n\n"
-            "🎵 I can help you find music!\n\n"
-            "**Commands:**\n"
-            "`/play <song>` - Get YouTube link\n"
-            "`/spotify <song>` - Get Spotify link\n"
-            "`/search <song>` - Search both\n\n"
-            "**Example:**\n"
-            "`/play Despacito`"
+        opts = {'format': 'bestaudio/best', 'quiet': True, 'no_warnings': True}
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(f"ytsearch:{query}", download=False)
+            if info and 'entries' in info and info['entries']:
+                v = info['entries'][0]
+                url = v.get('url')
+                if not url and 'formats' in v:
+                    for f in v['formats']:
+                        if f.get('acodec') != 'none':
+                            url = f.get('url')
+                            break
+                if url:
+                    return {
+                        'title': v.get('title', query),
+                        'duration': v.get('duration', 0),
+                        'url': url
+                    }
+        return None
+    except Exception as e:
+        logger.error(f"Audio error: {e}")
+        return None
+
+async def play_song(cid, song):
+    try:
+        stream = AudioPiped(song['url'], audio_parameters=HighQualityAudio())
+        await calls.play(cid, stream)
+        now_playing[cid] = song
+        logger.info(f"Playing: {song['title']}")
+        return True
+    except Exception as e:
+        logger.error(f"Play error: {e}")
+        return False
+
+@app.on_message(filters.command("start"))
+async def start_cmd(c, m: Message):
+    try:
+        text = (
+            "⚔️ **BANKAI MUSIC BOT** ⚔️\n\n"
+            "🎵 **Commands:**\n"
+            "`/play <song>` - Play in voice chat\n"
+            "`/queue` - Show queue\n"
+            "`/skip` - Next song\n"
+            "`/stop` - Stop\n\n"
+            "**Setup:** Make bot admin → Start VC → `/play song`"
         )
-        await update.message.reply_text(welcome, reply_markup=InlineKeyboardMarkup(btns))
+        await m.reply_text(text, parse_mode="Markdown")
     except Exception as e:
         logger.error(f"Start error: {e}")
 
-async def play(update: Update, context: ContextTypes.DEFAULT_TYPE):
+@app.on_message(filters.command("play"))
+async def play_cmd(c, m: Message):
     try:
-        if not context.args:
-            await update.message.reply_text("❌ Usage: `/play <song name>`\n\nExample: `/play Despacito`")
+        if m.chat.type == "private":
+            await m.reply_text("❌ Use in groups only!")
+            return
+        if len(m.command) < 2:
+            await m.reply_text("❌ `/play <song name>`")
             return
         
-        song = ' '.join(context.args)
-        url = get_youtube_url(song)
+        query = m.text.split(None, 1)[1]
+        cid = m.chat.id
+        msg = await m.reply_text(f"🔍 Searching: `{query}`")
         
-        keyboard = [[InlineKeyboardButton("▶️ YouTube", url=url)]]
-        await update.message.reply_text(
-            f"🎵 **{song}**",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-        logger.info(f"Play: {song}")
+        song = await get_audio(query)
+        if not song:
+            await msg.edit_text("❌ Not found!")
+            return
+        
+        queues[cid].append(song)
+        pos = len(queues[cid])
+        
+        if pos == 1:
+            await msg.edit_text("🎵 Joining VC...")
+            if await play_song(cid, song):
+                dur = f"{song['duration']//60}:{song['duration']%60:02d}" if song['duration'] > 0 else "?"
+                await msg.edit_text(f"▶️ **Now Playing:**\n`{song['title']}`\n⏱️ `{dur}`", parse_mode="Markdown")
+            else:
+                await msg.edit_text("❌ Failed! Make sure:\n• VC is started\n• Bot is admin\n• VC permissions enabled")
+                queues[cid].clear()
+        else:
+            await msg.edit_text(f"✅ Added to queue!\n`{song['title']}`\n📍 Position: #{pos}", parse_mode="Markdown")
     except Exception as e:
         logger.error(f"Play error: {e}")
 
-async def spotify_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+@app.on_message(filters.command("queue"))
+async def queue_cmd(c, m: Message):
     try:
-        if not context.args:
-            await update.message.reply_text("❌ Usage: `/spotify <song name>`")
+        q = queues.get(m.chat.id, [])
+        if not q:
+            await m.reply_text("📭 Queue empty!")
             return
-        
-        song = ' '.join(context.args)
-        url = get_spotify_url(song)
-        
-        keyboard = [[InlineKeyboardButton("🎵 Spotify", url=url)]]
-        await update.message.reply_text(
-            f"🎵 **{song}**",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-        logger.info(f"Spotify: {song}")
+        txt = f"📋 **Queue ({len(q)}):**\n\n"
+        for i, s in enumerate(q[:10], 1):
+            txt += f"{'▶️' if i==1 else f'{i}.'} `{s['title']}`\n"
+        if len(q) > 10:
+            txt += f"...+{len(q)-10} more"
+        await m.reply_text(txt, parse_mode="Markdown")
     except Exception as e:
-        logger.error(f"Spotify error: {e}")
+        logger.error(f"Queue error: {e}")
 
-async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
+@app.on_message(filters.command("skip"))
+async def skip_cmd(c, m: Message):
     try:
-        if not context.args:
-            await update.message.reply_text("❌ Usage: `/search <song name>`")
+        cid = m.chat.id
+        if not queues[cid]:
+            await m.reply_text("❌ Nothing playing!")
             return
-        
-        song = ' '.join(context.args)
-        yt_url = get_youtube_url(song)
-        sp_url = get_spotify_url(song)
-        
-        keyboard = [
-            [InlineKeyboardButton("▶️ YouTube", url=yt_url)],
-            [InlineKeyboardButton("🎵 Spotify", url=sp_url)]
-        ]
-        await update.message.reply_text(
-            f"🔍 **Search: {song}**",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-        logger.info(f"Search: {song}")
+        queues[cid].pop(0)
+        if queues[cid]:
+            if await play_song(cid, queues[cid][0]):
+                await m.reply_text(f"⏭️ Skipped! Now: `{queues[cid][0]['title']}`", parse_mode="Markdown")
+            else:
+                await m.reply_text("❌ Error skipping!")
+        else:
+            await calls.leave_call(cid)
+            await m.reply_text("⏹️ Queue ended!")
     except Exception as e:
-        logger.error(f"Search error: {e}")
+        logger.error(f"Skip error: {e}")
 
-async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+@app.on_message(filters.command("stop"))
+async def stop_cmd(c, m: Message):
     try:
-        help_text = (
-            "⚔️ **Bankai Bot Help** ⚔️\n\n"
-            "**Commands:**\n"
-            "`/play <song>` - YouTube search\n"
-            "`/spotify <song>` - Spotify search\n"
-            "`/search <song>` - Both\n"
-            "`/help` - This message\n\n"
-            "**Examples:**\n"
-            "`/play Ed Sheeran Shape of You`\n"
-            "`/spotify Taylor Swift`"
-        )
-        await update.message.reply_text(help_text)
+        cid = m.chat.id
+        await calls.leave_call(cid)
+        queues[cid].clear()
+        now_playing.pop(cid, None)
+        await m.reply_text("⏹️ Stopped!")
     except Exception as e:
-        logger.error(f"Help error: {e}")
+        logger.error(f"Stop error: {e}")
+
+@calls.on_stream_end()
+async def stream_end(c, u):
+    try:
+        cid = u.chat_id
+        if queues[cid]:
+            queues[cid].pop(0)
+            if queues[cid]:
+                await play_song(cid, queues[cid][0])
+                logger.info(f"Auto-playing next: {queues[cid][0]['title']}")
+            else:
+                await calls.leave_call(cid)
+    except Exception as e:
+        logger.error(f"Stream end error: {e}")
 
 async def main():
-    logger.info("="*50)
-    logger.info("⚔️  BANKAI MUSIC BOT STARTING")
-    logger.info("="*50)
+    logger.info("="*60)
+    logger.info("⚔️  BANKAI MUSIC BOT - RAILWAY")
+    logger.info("="*60)
     
-    if not BOT_TOKEN:
-        logger.error("❌ BOT_TOKEN missing!")
-        return
+    try:
+        await app.start()
+        logger.info("✅ Bot started")
+    except Exception as e:
+        logger.error(f"Bot error: {e}")
+        sys.exit(1)
     
-    logger.info(f"✅ BOT_TOKEN: {BOT_TOKEN[:20]}...")
+    try:
+        await user.start()
+        logger.info("✅ User client started")
+    except Exception as e:
+        logger.error(f"User client error: {e}")
+        sys.exit(1)
     
-    app = Application.builder().token(BOT_TOKEN).build()
+    try:
+        await calls.start()
+        logger.info("✅ PyTgCalls started")
+    except Exception as e:
+        logger.error(f"PyTgCalls error: {e}")
+        sys.exit(1)
     
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("play", play))
-    app.add_handler(CommandHandler("spotify", spotify_cmd))
-    app.add_handler(CommandHandler("search", search))
-    app.add_handler(CommandHandler("help", help_cmd))
+    logger.info("="*60)
+    logger.info("⚔️  BOT IS READY!")
+    logger.info("="*60)
     
-    logger.info("="*50)
-    logger.info("✅ BOT IS READY!")
-    logger.info("="*50)
-    
-    await app.run_polling()
+    await asyncio.Event().wait()
 
 if __name__ == "__main__":
-    import asyncio
     asyncio.run(main())
-
