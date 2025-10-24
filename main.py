@@ -82,6 +82,7 @@ async def get_link(query: str):
 
 async def play_song(chat_id: int, song: dict):
     """Start playing a song in the voice chat."""
+    stream = None
     try:
         stream = AudioPiped(song['url'], audio_parameters=HighQualityAudio())
         await calls.play(chat_id, stream)
@@ -95,8 +96,9 @@ async def play_song(chat_id: int, song: dict):
         return False
     except AlreadyJoinedError:
         logger.info(f"Already in voice chat {chat_id}, changing stream")
-        await calls.change_stream(chat_id, stream)
-        playing[chat_id] = song
+        if stream:
+            await calls.change_stream(chat_id, stream)
+            playing[chat_id] = song
         return True
     except Exception as e:
         logger.error(f"Error playing song: {e}")
@@ -270,132 +272,4 @@ async def skip_cmd(client, message: Message):
             await calls.leave_call(chat_id)
             playing.pop(chat_id, None)
             paused.discard(chat_id)
-            await message.reply_text("⏭ **Skipped!** No more songs in queue.")
-    except Exception as e:
-        logger.error(f"Error in skip command: {e}")
-        await message.reply_text("❌ Failed to skip!")
-
-
-@app.on_message(filters.command("stop"))
-async def stop_cmd(client, message: Message):
-    """Stop playback and clear the queue."""
-    try:
-        chat_id = message.chat.id
-        await calls.leave_call(chat_id)
-        queues[chat_id].clear()
-        playing.pop(chat_id, None)
-        paused.discard(chat_id)
-        await message.reply_text("⏹ **Stopped!** Queue cleared.")
-    except Exception as e:
-        logger.error(f"Error in stop command: {e}")
-        await message.reply_text("❌ Failed to stop!")
-
-
-@app.on_message(filters.command("queue"))
-async def queue_cmd(client, message: Message):
-    """Display the current queue."""
-    try:
-        queue = queues.get(message.chat.id, [])
-        if not queue:
-            await message.reply_text("📭 Queue is empty!")
-            return
-        
-        queue_text = f"📋 **Current Queue ({len(queue)} songs):**\n\n"
-        
-        for idx, song in enumerate(queue[:10], 1):
-            duration = format_duration(song['duration'])
-            status = "▶️" if idx == 1 else f"{idx}."
-            queue_text += f"{status} {song['title']} ({duration})\n"
-        
-        if len(queue) > 10:
-            queue_text += f"\n... and {len(queue) - 10} more songs"
-        
-        await message.reply_text(queue_text)
-    except Exception as e:
-        logger.error(f"Error in queue command: {e}")
-        await message.reply_text("❌ Failed to fetch queue!")
-
-
-@app.on_message(filters.command("nowplaying"))
-async def nowplaying_cmd(client, message: Message):
-    """Show currently playing song information."""
-    try:
-        chat_id = message.chat.id
-        if chat_id not in playing:
-            await message.reply_text("❌ Nothing is playing right now!")
-            return
-        
-        song = playing[chat_id]
-        duration = format_duration(song['duration'])
-        status = "⏸ Paused" if chat_id in paused else "▶️ Playing"
-        
-        await message.reply_text(
-            f"{status}\n\n"
-            f"🎵 **{song['title']}**\n"
-            f"⏱ Duration: {duration}\n"
-            f"👤 Requested by: {song['requested_by']}"
-        )
-    except Exception as e:
-        logger.error(f"Error in nowplaying command: {e}")
-        await message.reply_text("❌ Failed to fetch current song info!")
-
-
-@calls.on_stream_end()
-async def on_stream_end(client, update):
-    """Handle when a song finishes playing."""
-    try:
-        chat_id = update.chat_id
-        logger.info(f"Stream ended in chat {chat_id}")
-        
-        if queues[chat_id]:
-            queues[chat_id].pop(0)
-            
-            if queues[chat_id]:
-                await play_song(chat_id, queues[chat_id][0])
-                logger.info(f"Auto-playing next song: {queues[chat_id][0]['title']}")
-            else:
-                await calls.leave_call(chat_id)
-                playing.pop(chat_id, None)
-                paused.discard(chat_id)
-                logger.info(f"Queue finished in chat {chat_id}")
-    except Exception as e:
-        logger.error(f"Error in stream end handler: {e}")
-
-
-async def main():
-    """Main function to start the bot."""
-    logger.info("🤖 Starting Voice Chat Music Bot...")
-    
-    if not SESSION_STRING:
-        logger.warning("⚠️ SESSION_STRING not configured! Bot will use its own account for voice chat.")
-        logger.warning("⚠️ This may not work in all groups. Consider using a userbot session.")
-    
-    try:
-        await app.start()
-        logger.info("✅ Bot client started")
-        
-        if user and SESSION_STRING:
-            await user.start()
-            logger.info("✅ Userbot client started")
-        
-        await calls.start()
-        logger.info("✅ PyTgCalls started")
-        
-        me = await app.get_me()
-        logger.info(f"🎵 Bot running as @{me.username}")
-        logger.info("🚀 Bot is ready! Send /start to begin.")
-        
-        await asyncio.Event().wait()
-    except Exception as e:
-        logger.error(f"❌ Error starting bot: {e}", exc_info=True)
-        sys.exit(1)
-    finally:
-        await app.stop()
-        if user:
-            await user.stop()
-        await calls.stop()
-        logger.info("Bot stopped")
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
+            await message.reply_text("⏭ **Skipped!** No more
