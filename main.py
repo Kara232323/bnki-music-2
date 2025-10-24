@@ -4,213 +4,398 @@ import sys
 import asyncio
 import logging
 from collections import defaultdict
-from aiohttp import web
 from pyrogram import Client, filters
 from pyrogram.types import Message
+from pyrogram.errors import ChatAdminRequired, UserAlreadyParticipant
 from pytgcalls import PyTgCalls
 from pytgcalls.types.input_stream import AudioPiped
 from pytgcalls.types.input_stream.quality import HighQualityAudio
+from pytgcalls.exceptions import NoActiveGroupCall, AlreadyJoinedError
 import yt_dlp
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
-# Config
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 API_ID = int(os.getenv("API_ID", "0"))
 API_HASH = os.getenv("API_HASH")
 SESSION_STRING = os.getenv("SESSION_STRING", "")
-PORT = int(os.getenv("PORT", 8080))
 
-# Clients
+if not BOT_TOKEN or not API_ID or not API_HASH:
+    logger.error("Missing required environment variables: BOT_TOKEN, API_ID, or API_HASH")
+    sys.exit(1)
+
 app = Client("musicbot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 user = Client("assistant", api_id=API_ID, api_hash=API_HASH, session_string=SESSION_STRING) if SESSION_STRING else None
 calls = PyTgCalls(user if user else app)
 
-# Queue
 queues = defaultdict(list)
 playing = {}
+paused = set()
 
-# Health check for Render
-async def health(request):
-    return web.Response(text="Voice Chat Bot Running!", status=200)
 
-# Get audio link
 async def get_link(query: str):
+    """Extract audio stream URL from YouTube search or direct link."""
     try:
-        opts = {'format': 'bestaudio', 'quiet': True, 'no_warnings': True}
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(f"ytsearch:{query}", download=False)
-            if info and 'entries' in info and info['entries']:
-                v = info['entries'][0]
-                url = v.get('url')
-                if not url and 'formats' in v:
-                    for f in v['formats']:
-                        if f.get('acodec') != 'none':
-                            url = f.get('url')
-                            break
-                if url:
-                    return {'title': v.get('title', query), 'duration': v.get('duration', 0), 'url': url}
+        ydl_opts = {
+            'format': 'bestaudio/best',
+            'quiet': True,
+            'no_warnings': True,
+            'extract_flat': False,
+            'geo_bypass': True,
+        }
+        
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            if query.startswith(('http://', 'https://')):
+                info = ydl.extract_info(query, download=False)
+            else:
+                info = ydl.extract_info(f"ytsearch:{query}", download=False)
+                if info and 'entries' in info and info['entries']:
+                    info = info['entries'][0]
+            
+            if not info:
+                return None
+            
+            url = info.get('url')
+            if not url and 'formats' in info:
+                for fmt in info['formats']:
+                    if fmt.get('acodec') != 'none' and fmt.get('url'):
+                        url = fmt['url']
+                        break
+            
+            if url:
+                return {
+                    'title': info.get('title', query),
+                    'duration': info.get('duration', 0),
+                    'url': url,
+                    'thumbnail': info.get('thumbnail', ''),
+                }
+        
         return None
     except Exception as e:
-        logger.error(f"Link error: {e}")
+        logger.error(f"Error extracting link: {e}")
         return None
 
-# Play song
-async def play(cid: int, song: dict):
+
+async def play_song(chat_id: int, song: dict):
+    """Start playing a song in the voice chat."""
     try:
         stream = AudioPiped(song['url'], audio_parameters=HighQualityAudio())
-        await calls.play(cid, stream)
-        playing[cid] = song
-        logger.info(f"Playing: {song['title']}")
+        await calls.play(chat_id, stream)
+        playing[chat_id] = song
+        if chat_id in paused:
+            paused.remove(chat_id)
+        logger.info(f"Now playing in {chat_id}: {song['title']}")
+        return True
+    except NoActiveGroupCall:
+        logger.error(f"No active voice chat in {chat_id}")
+        return False
+    except AlreadyJoinedError:
+        logger.info(f"Already in voice chat {chat_id}, changing stream")
+        await calls.change_stream(chat_id, stream)
+        playing[chat_id] = song
         return True
     except Exception as e:
-        logger.error(f"Play error: {e}")
+        logger.error(f"Error playing song: {e}")
         return False
 
-# Commands
+
+def format_duration(seconds: int) -> str:
+    """Format duration in seconds to MM:SS or HH:MM:SS."""
+    if seconds <= 0:
+        return "Unknown"
+    hours = seconds // 3600
+    minutes = (seconds % 3600) // 60
+    secs = seconds % 60
+    if hours > 0:
+        return f"{hours}:{minutes:02d}:{secs:02d}"
+    return f"{minutes}:{secs:02d}"
+
+
 @app.on_message(filters.command("start"))
-async def start_cmd(c, m: Message):
-    await m.reply_text("🎵 Voice Chat Music Bot\n\nCommands:\n/play <song>\n/queue\n/skip\n/stop\n\nSetup:\n1. Make bot admin\n2. Start voice chat\n3. Use /play <song>")
+async def start_cmd(client, message: Message):
+    """Start command with bot introduction."""
+    welcome_text = """
+🎵 **Welcome to Voice Chat Music Bot!**
+
+**Available Commands:**
+/play <song name or URL> - Play a song
+/pause - Pause the current song
+/resume - Resume playback
+/skip - Skip to next song
+/stop - Stop playback and clear queue
+/queue - Show current queue
+/nowplaying - Show current song info
+
+**Setup Instructions:**
+1. Add me to your group
+2. Make me an admin with voice chat permissions
+3. Start a voice chat in your group
+4. Use /play to start playing music!
+
+**Supported:**
+✅ YouTube search
+✅ Direct YouTube links
+✅ Queue management
+✅ Multi-chat support
+"""
+    await message.reply_text(welcome_text)
+
 
 @app.on_message(filters.command("play"))
-async def play_cmd(c, m: Message):
+async def play_cmd(client, message: Message):
+    """Play command to add songs to queue and start playback."""
     try:
-        if m.chat.type == "private":
-            await m.reply_text("Use in groups only!")
-            return
-        if len(m.command) < 2:
-            await m.reply_text("Usage: /play <song>")
+        if message.chat.type == "private":
+            await message.reply_text("❌ This command works only in groups!")
             return
         
-        query = m.text.split(None, 1)[1]
-        cid = m.chat.id
-        msg = await m.reply_text(f"🔍 Searching: {query}")
+        if len(message.command) < 2:
+            await message.reply_text("❌ Usage: `/play <song name or URL>`")
+            return
+        
+        query = message.text.split(None, 1)[1]
+        chat_id = message.chat.id
+        
+        status_msg = await message.reply_text(f"🔍 Searching: `{query}`...")
         
         song = await get_link(query)
         if not song:
-            await msg.edit_text("❌ Song not found!")
+            await status_msg.edit_text("❌ Song not found! Try a different search term.")
             return
         
-        song['by'] = m.from_user.mention or m.from_user.first_name
-        queues[cid].append(song)
-        pos = len(queues[cid])
+        song['requested_by'] = message.from_user.mention if message.from_user.mention else message.from_user.first_name
+        queues[chat_id].append(song)
+        position = len(queues[chat_id])
         
-        if pos == 1:
-            await msg.edit_text("🎵 Joining VC...")
-            ok = await play(cid, song)
-            if ok:
-                dur = f"{song['duration']//60}:{song['duration']%60:02d}" if song['duration'] > 0 else "?"
-                await msg.edit_text(f"🎵 Now Playing:\n{song['title']}\nDuration: {dur}\nBy: {song['by']}\n\n🔊 Playing in voice chat!")
+        if position == 1:
+            await status_msg.edit_text("🎧 Joining voice chat...")
+            success = await play_song(chat_id, song)
+            
+            if success:
+                duration = format_duration(song['duration'])
+                await status_msg.edit_text(
+                    f"▶️ **Now Playing:**\n"
+                    f"🎵 {song['title']}\n"
+                    f"⏱ Duration: {duration}\n"
+                    f"👤 Requested by: {song['requested_by']}"
+                )
             else:
-                await msg.edit_text("❌ Failed to join VC!\n\nMake sure:\n• VC is started\n• Bot is admin\n• Bot has VC permissions")
-                queues[cid].clear()
+                await status_msg.edit_text(
+                    "❌ **Failed to join voice chat!**\n\n"
+                    "**Please ensure:**\n"
+                    "• Voice chat is started in the group\n"
+                    "• Bot is an admin with voice chat permissions\n"
+                    "• SESSION_STRING is configured (for userbot mode)"
+                )
+                queues[chat_id].clear()
         else:
-            await msg.edit_text(f"✅ Added to queue!\n{song['title']}\nPosition: #{pos}\nBy: {song['by']}")
+            duration = format_duration(song['duration'])
+            await status_msg.edit_text(
+                f"✅ **Added to queue!**\n"
+                f"🎵 {song['title']}\n"
+                f"⏱ Duration: {duration}\n"
+                f"📍 Position: #{position}\n"
+                f"👤 Requested by: {song['requested_by']}"
+            )
     except Exception as e:
-        logger.error(f"Play cmd error: {e}")
-        await m.reply_text("❌ Error!")
+        logger.error(f"Error in play command: {e}", exc_info=True)
+        await message.reply_text(f"❌ An error occurred: {str(e)}")
 
-@app.on_message(filters.command("queue"))
-async def queue_cmd(c, m: Message):
+
+@app.on_message(filters.command("pause"))
+async def pause_cmd(client, message: Message):
+    """Pause the current playback."""
     try:
-        q = queues.get(m.chat.id, [])
-        if not q:
-            await m.reply_text("📭 Queue is empty!")
+        chat_id = message.chat.id
+        if chat_id not in playing:
+            await message.reply_text("❌ Nothing is playing right now!")
             return
-        txt = f"📋 Queue ({len(q)} songs):\n\n"
-        for i, s in enumerate(q[:10], 1):
-            txt += f"{'▶️' if i==1 else str(i)+'.'} {s['title']}\n"
-        if len(q) > 10:
-            txt += f"...{len(q)-10} more"
-        await m.reply_text(txt)
+        
+        if chat_id in paused:
+            await message.reply_text("⏸ Already paused!")
+            return
+        
+        await calls.pause_stream(chat_id)
+        paused.add(chat_id)
+        await message.reply_text("⏸ **Paused!**")
     except Exception as e:
-        logger.error(f"Queue error: {e}")
+        logger.error(f"Error in pause command: {e}")
+        await message.reply_text("❌ Failed to pause!")
+
+
+@app.on_message(filters.command("resume"))
+async def resume_cmd(client, message: Message):
+    """Resume the paused playback."""
+    try:
+        chat_id = message.chat.id
+        if chat_id not in playing:
+            await message.reply_text("❌ Nothing is playing right now!")
+            return
+        
+        if chat_id not in paused:
+            await message.reply_text("▶️ Already playing!")
+            return
+        
+        await calls.resume_stream(chat_id)
+        paused.remove(chat_id)
+        await message.reply_text("▶️ **Resumed!**")
+    except Exception as e:
+        logger.error(f"Error in resume command: {e}")
+        await message.reply_text("❌ Failed to resume!")
+
 
 @app.on_message(filters.command("skip"))
-async def skip_cmd(c, m: Message):
+async def skip_cmd(client, message: Message):
+    """Skip to the next song in queue."""
     try:
-        cid = m.chat.id
-        if not queues[cid]:
-            await m.reply_text("❌ Nothing playing!")
+        chat_id = message.chat.id
+        if not queues[chat_id]:
+            await message.reply_text("❌ Nothing is playing!")
             return
-        queues[cid].pop(0)
-        if queues[cid]:
-            await play(cid, queues[cid][0])
-            await m.reply_text(f"⏭️ Skipped!\n\n🎵 Now: {queues[cid][0]['title']}")
+        
+        current_song = queues[chat_id][0]['title']
+        queues[chat_id].pop(0)
+        
+        if queues[chat_id]:
+            await play_song(chat_id, queues[chat_id][0])
+            await message.reply_text(
+                f"⏭ **Skipped!**\n\n"
+                f"▶️ Now playing: {queues[chat_id][0]['title']}"
+            )
         else:
-            await calls.leave_call(cid)
-            playing.pop(cid, None)
-            await m.reply_text("⏭️ Skipped! No more songs")
+            await calls.leave_call(chat_id)
+            playing.pop(chat_id, None)
+            paused.discard(chat_id)
+            await message.reply_text("⏭ **Skipped!** No more songs in queue.")
     except Exception as e:
-        logger.error(f"Skip error: {e}")
+        logger.error(f"Error in skip command: {e}")
+        await message.reply_text("❌ Failed to skip!")
+
 
 @app.on_message(filters.command("stop"))
-async def stop_cmd(c, m: Message):
+async def stop_cmd(client, message: Message):
+    """Stop playback and clear the queue."""
     try:
-        await calls.leave_call(m.chat.id)
-        queues[m.chat.id].clear()
-        playing.pop(m.chat.id, None)
-        await m.reply_text("⏹️ Stopped!")
+        chat_id = message.chat.id
+        await calls.leave_call(chat_id)
+        queues[chat_id].clear()
+        playing.pop(chat_id, None)
+        paused.discard(chat_id)
+        await message.reply_text("⏹ **Stopped!** Queue cleared.")
     except Exception as e:
-        logger.error(f"Stop error: {e}")
+        logger.error(f"Error in stop command: {e}")
+        await message.reply_text("❌ Failed to stop!")
+
+
+@app.on_message(filters.command("queue"))
+async def queue_cmd(client, message: Message):
+    """Display the current queue."""
+    try:
+        queue = queues.get(message.chat.id, [])
+        if not queue:
+            await message.reply_text("📭 Queue is empty!")
+            return
+        
+        queue_text = f"📋 **Current Queue ({len(queue)} songs):**\n\n"
+        
+        for idx, song in enumerate(queue[:10], 1):
+            duration = format_duration(song['duration'])
+            status = "▶️" if idx == 1 else f"{idx}."
+            queue_text += f"{status} {song['title']} ({duration})\n"
+        
+        if len(queue) > 10:
+            queue_text += f"\n... and {len(queue) - 10} more songs"
+        
+        await message.reply_text(queue_text)
+    except Exception as e:
+        logger.error(f"Error in queue command: {e}")
+        await message.reply_text("❌ Failed to fetch queue!")
+
+
+@app.on_message(filters.command("nowplaying"))
+async def nowplaying_cmd(client, message: Message):
+    """Show currently playing song information."""
+    try:
+        chat_id = message.chat.id
+        if chat_id not in playing:
+            await message.reply_text("❌ Nothing is playing right now!")
+            return
+        
+        song = playing[chat_id]
+        duration = format_duration(song['duration'])
+        status = "⏸ Paused" if chat_id in paused else "▶️ Playing"
+        
+        await message.reply_text(
+            f"{status}\n\n"
+            f"🎵 **{song['title']}**\n"
+            f"⏱ Duration: {duration}\n"
+            f"👤 Requested by: {song['requested_by']}"
+        )
+    except Exception as e:
+        logger.error(f"Error in nowplaying command: {e}")
+        await message.reply_text("❌ Failed to fetch current song info!")
+
 
 @calls.on_stream_end()
-async def on_end(c, u):
+async def on_stream_end(client, update):
+    """Handle when a song finishes playing."""
     try:
-        cid = u.chat_id
-        if queues[cid]:
-            queues[cid].pop(0)
-            if queues[cid]:
-                await play(cid, queues[cid][0])
+        chat_id = update.chat_id
+        logger.info(f"Stream ended in chat {chat_id}")
+        
+        if queues[chat_id]:
+            queues[chat_id].pop(0)
+            
+            if queues[chat_id]:
+                await play_song(chat_id, queues[chat_id][0])
+                logger.info(f"Auto-playing next song: {queues[chat_id][0]['title']}")
             else:
-                await calls.leave_call(cid)
-                playing.pop(cid, None)
+                await calls.leave_call(chat_id)
+                playing.pop(chat_id, None)
+                paused.discard(chat_id)
+                logger.info(f"Queue finished in chat {chat_id}")
     except Exception as e:
-        logger.error(f"End error: {e}")
+        logger.error(f"Error in stream end handler: {e}")
 
-# Web server for Render
-async def start_web():
-    app_web = web.Application()
-    app_web.router.add_get('/', health)
-    app_web.router.add_get('/health', health)
-    runner = web.AppRunner(app_web)
-    await runner.setup()
-    site = web.TCPSite(runner, '0.0.0.0', PORT)
-    await site.start()
-    logger.info(f"Web server on port {PORT}")
-    return runner
 
-# Main
 async def main():
-    logger.info("Starting Voice Chat Bot...")
-    
-    if not BOT_TOKEN or not API_ID or not API_HASH:
-        logger.error("Missing credentials!")
-        sys.exit(1)
+    """Main function to start the bot."""
+    logger.info("🤖 Starting Voice Chat Music Bot...")
     
     if not SESSION_STRING:
-        logger.error("SESSION_STRING missing! Bot cannot join VC!")
-        logger.error("Generate it with: python generate_session.py")
+        logger.warning("⚠️ SESSION_STRING not configured! Bot will use its own account for voice chat.")
+        logger.warning("⚠️ This may not work in all groups. Consider using a userbot session.")
+    
+    try:
+        await app.start()
+        logger.info("✅ Bot client started")
+        
+        if user and SESSION_STRING:
+            await user.start()
+            logger.info("✅ Userbot client started")
+        
+        await calls.start()
+        logger.info("✅ PyTgCalls started")
+        
+        me = await app.get_me()
+        logger.info(f"🎵 Bot running as @{me.username}")
+        logger.info("🚀 Bot is ready! Send /start to begin.")
+        
+        await asyncio.Event().wait()
+    except Exception as e:
+        logger.error(f"❌ Error starting bot: {e}", exc_info=True)
         sys.exit(1)
-    
-    logger.info(f"BOT_TOKEN: {BOT_TOKEN[:20]}...")
-    logger.info(f"API_ID: {API_ID}")
-    logger.info(f"SESSION_STRING: Set")
-    
-    # Start web server
-    web_runner = await start_web()
-    await asyncio.sleep(1)
-    
-    # Start bot
-    await app.start()
-    if user and SESSION_STRING:
-        await user.start()
-    await calls.start()
-    
-    logger.info("✅ Bot ready!")
-    await asyncio.Event().wait()
+    finally:
+        await app.stop()
+        if user:
+            await user.stop()
+        await calls.stop()
+        logger.info("Bot stopped")
+
 
 if __name__ == "__main__":
     asyncio.run(main())
-
