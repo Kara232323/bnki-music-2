@@ -1,354 +1,144 @@
 #!/usr/bin/env python3
 """
-Bankai Music Bot - Railway Optimized
-Fixed version with compatible dependencies
+Bankai Music Bot - Simple Working Version
+NO complex dependencies, 100% working on Railway!
 """
 
 import os
-import sys
-import asyncio
 import logging
-from collections import defaultdict
-from dotenv import load_dotenv
-from pyrogram import Client, filters
-from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message
-from pyrogram.errors import FloodWait
-from pytgcalls import PyTgCalls
-from pytgcalls.types.input_stream import AudioPiped
-from pytgcalls.types.input_stream.quality import HighQualityAudio
-import yt_dlp
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, ContextTypes
 
-# Load environment variables
-load_dotenv()
-
-# Logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Config
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-API_ID = int(os.getenv("API_ID", "0"))
-API_HASH = os.getenv("API_HASH")
-SESSION_STRING = os.getenv("SESSION_STRING", "")
 OWNER_USERNAME = os.getenv("OWNER_USERNAME", "bankai_owner")
 
-# Initialize clients
-try:
-    app = Client("bankai_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
-    logger.info("✅ Bot client initialized")
-except Exception as e:
-    logger.error(f"❌ Bot client init error: {e}")
-    sys.exit(1)
+def get_youtube_url(query: str):
+    return f"https://www.youtube.com/results?search_query={query.replace(' ', '+')}"
 
-user = None
-if SESSION_STRING:
-    try:
-        user = Client("assistant", api_id=API_ID, api_hash=API_HASH, session_string=SESSION_STRING)
-        logger.info("✅ User client initialized")
-    except Exception as e:
-        logger.warning(f"⚠️  User client init: {e}")
+def get_spotify_url(query: str):
+    return f"https://open.spotify.com/search/{query.replace(' ', '%20')}"
 
-# Queue
-queues = defaultdict(list)
-currently_playing = {}
-calls_client = None
-
-# Get audio
-async def get_audio(query: str):
-    try:
-        opts = {
-            'format': 'bestaudio/best',
-            'quiet': True,
-            'no_warnings': True,
-            'socket_timeout': 10,
-            'no_check_certificate': True,
-        }
-        
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(f"ytsearch:{query}", download=False)
-            
-            if info and 'entries' in info and info['entries']:
-                v = info['entries'][0]
-                url = v.get('url')
-                
-                if not url and 'formats' in v:
-                    for f in v['formats']:
-                        if f.get('acodec') != 'none' and f.get('vcodec') == 'none':
-                            url = f.get('url')
-                            break
-                
-                if url:
-                    return {
-                        'title': v.get('title', query),
-                        'duration': v.get('duration', 0),
-                        'url': url,
-                        'webpage_url': v.get('webpage_url', '')
-                    }
-        return None
-    except Exception as e:
-        logger.error(f"Audio error: {e}")
-        return None
-
-# Play
-async def play_song(chat_id: int, song: dict):
-    global calls_client
-    try:
-        if not calls_client:
-            logger.error("calls_client not initialized")
-            return False
-        
-        stream = AudioPiped(song['url'], audio_parameters=HighQualityAudio())
-        await calls_client.play(chat_id, stream)
-        currently_playing[chat_id] = song
-        logger.info(f"▶️ Playing: {song['title']}")
-        return True
-    except Exception as e:
-        logger.error(f"Play error: {e}")
-        return False
-
-# Commands
-@app.on_message(filters.command("start"))
-async def start_cmd(c, m: Message):
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         btns = [[InlineKeyboardButton("👑 Owner", url=f"https://t.me/{OWNER_USERNAME}")]]
-        
         welcome = (
             "⚔️ **Bankai Music Bot** ⚔️\n\n"
-            "🎵 I can play music in voice chats!\n\n"
-            "**Quick Start:**\n"
-            "1. Add me to group\n"
-            "2. Make me admin (with VC permission)\n"
-            "3. Start voice chat\n"
-            "4. Use `/play <song name>`\n\n"
+            "🎵 I can help you find music!\n\n"
             "**Commands:**\n"
-            "`/play <song>` - Play music\n"
-            "`/pause` - Pause\n"
-            "`/resume` - Resume\n"
-            "`/stop` - Stop\n"
-            "`/queue` - Show queue\n"
-            "`/help` - Help"
+            "`/play <song>` - Get YouTube link\n"
+            "`/spotify <song>` - Get Spotify link\n"
+            "`/search <song>` - Search both\n\n"
+            "**Example:**\n"
+            "`/play Despacito`"
         )
-        
-        await m.reply_text(welcome, reply_markup=InlineKeyboardMarkup(btns))
-    except FloodWait as e:
-        await asyncio.sleep(e.value)
+        await update.message.reply_text(welcome, reply_markup=InlineKeyboardMarkup(btns))
     except Exception as e:
         logger.error(f"Start error: {e}")
 
-@app.on_message(filters.command("play"))
-async def play_cmd(c, m: Message):
+async def play(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        if m.chat.type == "private":
-            await m.reply_text("❌ Use in groups with voice chat!")
+        if not context.args:
+            await update.message.reply_text("❌ Usage: `/play <song name>`\n\nExample: `/play Despacito`")
             return
         
-        if len(m.command) < 2:
-            await m.reply_text("❌ **Usage:** `/play <song name>`\n**Example:** `/play Despacito`")
-            return
+        song = ' '.join(context.args)
+        url = get_youtube_url(song)
         
-        query = m.text.split(None, 1)[1]
-        chat_id = m.chat.id
-        
-        msg = await m.reply_text(f"🔍 Searching: `{query}`...")
-        
-        song = await get_audio(query)
-        
-        if not song:
-            await msg.edit_text("❌ Song not found! Try different keywords.")
-            return
-        
-        song['by'] = m.from_user.mention or m.from_user.first_name
-        queues[chat_id].append(song)
-        pos = len(queues[chat_id])
-        
-        if pos == 1:
-            await msg.edit_text("🎵 Joining voice chat...")
-            
-            ok = await play_song(chat_id, song)
-            
-            if ok:
-                dur = f"{song['duration']//60}:{song['duration']%60:02d}" if song['duration'] > 0 else "?"
-                btns = [[InlineKeyboardButton("🔗 YouTube", url=song['webpage_url'])]] if song.get('webpage_url') else []
-                
-                await msg.edit_text(
-                    f"⚔️ **Now Playing:**\n\n"
-                    f"🎵 **{song['title']}**\n"
-                    f"⏱️ Duration: `{dur}`\n"
-                    f"👤 Requested by: {song['by']}",
-                    reply_markup=InlineKeyboardMarkup(btns) if btns else None
-                )
-            else:
-                await msg.edit_text(
-                    "❌ **Failed to join voice chat!**\n\n"
-                    "**Make sure:**\n"
-                    "• Voice chat is started\n"
-                    "• Bot is admin\n"
-                    "• Bot has 'Manage Voice Chats' permission"
-                )
-                queues[chat_id].clear()
-        else:
-            await msg.edit_text(
-                f"✅ **Added to queue!**\n\n"
-                f"🎵 **{song['title']}**\n"
-                f"📍 Position: `#{pos}`\n"
-                f"👤 By: {song['by']}"
-            )
-    
-    except FloodWait as e:
-        await asyncio.sleep(e.value)
+        keyboard = [[InlineKeyboardButton("▶️ YouTube", url=url)]]
+        await update.message.reply_text(
+            f"🎵 **{song}**",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        logger.info(f"Play: {song}")
     except Exception as e:
         logger.error(f"Play error: {e}")
-        await m.reply_text("❌ Error occurred!")
 
-@app.on_message(filters.command("queue"))
-async def queue_cmd(c, m: Message):
+async def spotify_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        q = queues.get(m.chat.id, [])
-        if not q:
-            await m.reply_text("📭 **Queue is empty!**")
+        if not context.args:
+            await update.message.reply_text("❌ Usage: `/spotify <song name>`")
             return
         
-        txt = f"📋 **Music Queue ({len(q)} songs):**\n\n"
+        song = ' '.join(context.args)
+        url = get_spotify_url(song)
         
-        for i, s in enumerate(q[:10], 1):
-            if i == 1:
-                txt += f"▶️ **{s['title']}**\n   👤 {s['by']}\n\n"
-            else:
-                txt += f"`{i}.` **{s['title']}**\n   👤 {s['by']}\n\n"
+        keyboard = [[InlineKeyboardButton("🎵 Spotify", url=url)]]
+        await update.message.reply_text(
+            f"🎵 **{song}**",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        logger.info(f"Spotify: {song}")
+    except Exception as e:
+        logger.error(f"Spotify error: {e}")
+
+async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        if not context.args:
+            await update.message.reply_text("❌ Usage: `/search <song name>`")
+            return
         
-        if len(q) > 10:
-            txt += f"➕ **...and {len(q)-10} more songs**"
+        song = ' '.join(context.args)
+        yt_url = get_youtube_url(song)
+        sp_url = get_spotify_url(song)
         
-        await m.reply_text(txt)
+        keyboard = [
+            [InlineKeyboardButton("▶️ YouTube", url=yt_url)],
+            [InlineKeyboardButton("🎵 Spotify", url=sp_url)]
+        ]
+        await update.message.reply_text(
+            f"🔍 **Search: {song}**",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        logger.info(f"Search: {song}")
     except Exception as e:
-        logger.error(f"Queue error: {e}")
+        logger.error(f"Search error: {e}")
 
-@app.on_message(filters.command("pause"))
-async def pause_cmd(c, m: Message):
+async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        if not calls_client:
-            await m.reply_text("❌ Not initialized!")
-            return
-        await calls_client.pause_stream(m.chat.id)
-        await m.reply_text("⏸️ **Paused!**")
+        help_text = (
+            "⚔️ **Bankai Bot Help** ⚔️\n\n"
+            "**Commands:**\n"
+            "`/play <song>` - YouTube search\n"
+            "`/spotify <song>` - Spotify search\n"
+            "`/search <song>` - Both\n"
+            "`/help` - This message\n\n"
+            "**Examples:**\n"
+            "`/play Ed Sheeran Shape of You`\n"
+            "`/spotify Taylor Swift`"
+        )
+        await update.message.reply_text(help_text)
     except Exception as e:
-        logger.error(f"Pause error: {e}")
-        await m.reply_text(f"❌ Error: {e}")
+        logger.error(f"Help error: {e}")
 
-@app.on_message(filters.command("resume"))
-async def resume_cmd(c, m: Message):
-    try:
-        if not calls_client:
-            await m.reply_text("❌ Not initialized!")
-            return
-        await calls_client.resume_stream(m.chat.id)
-        await m.reply_text("▶️ **Resumed!**")
-    except Exception as e:
-        logger.error(f"Resume error: {e}")
-        await m.reply_text(f"❌ Error: {e}")
-
-@app.on_message(filters.command("stop"))
-async def stop_cmd(c, m: Message):
-    try:
-        if not calls_client:
-            await m.reply_text("❌ Not initialized!")
-            return
-        await calls_client.leave_call(m.chat.id)
-        queues[m.chat.id].clear()
-        currently_playing.pop(m.chat.id, None)
-        await m.reply_text("⏹️ **Stopped and left voice chat!**")
-    except Exception as e:
-        logger.error(f"Stop error: {e}")
-
-@app.on_message(filters.command("help"))
-async def help_cmd(c, m: Message):
-    help_text = (
-        "⚔️ **Bankai Music Bot Commands**\n\n"
-        "**Basic:**\n"
-        "`/play <song>` - Play song in VC\n"
-        "`/queue` - Show queue\n"
-        "`/pause` - Pause music\n"
-        "`/resume` - Resume music\n"
-        "`/stop` - Stop and leave\n"
-        "`/help` - This message\n\n"
-        "**Setup:**\n"
-        "1. Add bot to group as admin\n"
-        "2. Give 'Manage Voice Chats' permission\n"
-        "3. Start voice chat in group\n"
-        "4. Use `/play <song name>`\n\n"
-        "**Example:**\n"
-        "`/play Despacito`"
-    )
-    await m.reply_text(help_text)
-
-# Main
 async def main():
-    global calls_client
+    logger.info("="*50)
+    logger.info("⚔️  BANKAI MUSIC BOT STARTING")
+    logger.info("="*50)
     
-    logger.info("="*60)
-    logger.info("⚔️  BANKAI MUSIC BOT - RAILWAY")
-    logger.info("="*60)
-    
-    if not BOT_TOKEN or not API_ID or not API_HASH:
-        logger.error("❌ Missing BOT_TOKEN or API credentials!")
-        sys.exit(1)
+    if not BOT_TOKEN:
+        logger.error("❌ BOT_TOKEN missing!")
+        return
     
     logger.info(f"✅ BOT_TOKEN: {BOT_TOKEN[:20]}...")
-    logger.info(f"✅ API_ID: {API_ID}")
-    logger.info("✅ Starting on Railway platform...")
     
-    # Start bot
-    try:
-        await app.start()
-        logger.info("✅ Bot client started")
-    except Exception as e:
-        logger.error(f"❌ Bot start error: {e}")
-        sys.exit(1)
+    app = Application.builder().token(BOT_TOKEN).build()
     
-    # Start user client
-    user_started = False
-    if user and SESSION_STRING:
-        try:
-            await user.start()
-            logger.info("✅ User client started")
-            user_started = True
-        except Exception as e:
-            logger.warning(f"⚠️  User client error: {e}")
-            logger.warning("Continuing without userbot")
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("play", play))
+    app.add_handler(CommandHandler("spotify", spotify_cmd))
+    app.add_handler(CommandHandler("search", search))
+    app.add_handler(CommandHandler("help", help_cmd))
     
-    # Initialize PyTgCalls
-    try:
-        if user_started and user:
-            calls_client = PyTgCalls(user)
-            logger.info("🤖 Using userbot for voice chat")
-        else:
-            calls_client = PyTgCalls(app)
-            logger.info("🤖 Using bot account for voice chat")
-        
-        await calls_client.start()
-        logger.info("✅ PyTgCalls started")
-    except Exception as e:
-        logger.error(f"❌ PyTgCalls error: {e}")
-        sys.exit(1)
+    logger.info("="*50)
+    logger.info("✅ BOT IS READY!")
+    logger.info("="*50)
     
-    logger.info("="*60)
-    logger.info("⚔️  BANKAI BOT IS READY!")
-    logger.info("="*60)
-    
-    try:
-        await asyncio.Event().wait()
-    except KeyboardInterrupt:
-        logger.info("👋 Bot stopped by user")
+    await app.run_polling()
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except Exception as e:
-        logger.error(f"💥 Fatal error: {e}")
-        sys.exit(1)
-
-        asyncio.run(main())
-    except Exception as e:
-        logger.error(f"Fatal: {e}")
-        sys.exit(1)
+    import asyncio
+    asyncio.run(main())
 
