@@ -14,7 +14,12 @@ from pyrogram import Client, filters
 from pyrogram.types import Message
 from pyrogram.enums import ChatMemberStatus
 import yt_dlp
+# For py-tgcalls 0.9.0
+from py_tgcalls import PyTgCalls
 
+# OR for pytgcalls 3.1.0
+from pytgcalls import PyTgCalls
+from pytgcalls.types import InputAudioStream
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -509,3 +514,4 @@ if __name__ == "__main__":
     except Exception as e:
         logger.error(f"Fatal error: {e}")
         sys.exit(1)
+
