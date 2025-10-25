@@ -1,3 +1,8 @@
+"""
+Telegram Voice Chat Music Bot
+Tested Working Code - Fixed Version
+October 2025
+"""
 
 import os
 import sys
