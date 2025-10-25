@@ -1,0 +1,5 @@
+# Set environment variables
+export BOT_TOKEN="8138462822:AAHGgPfArt8bpuJCXmEO3Rf62rQJbtsGrQo"
+export API_ID="29887059"
+export API_HASH="8173fb6e839cc131ab2341d59763be60"
+export SESSION_STRING="1BVtsOH8Bu3HLtiRLjy-409uCzVPbZfIs_uVdNVZdm30yX CnqBXeIDWHTrv4w66WtRkPk7F_gmbK7F4jDUxb5o5Quyng t0UHW-dTY-m8tn5Rth8Wo9Cr-Yr99cEgx2-W7UUnRi0zyS vNiel2XdAkeNW1ceJMSSXrzZHm7 YiKawRYZIaZfiunNK2"
