@@ -8,7 +8,10 @@ from collections import defaultdict
 from aiohttp import web
 from pyrogram import Client, filters
 from pyrogram.types import Message
-from tgcaller import TgCaller, AudioConfig
+from pytgcalls import PyTgCalls
+from pytgcalls.types import MediaStream, AudioQuality
+from pytgcalls.exceptions import NoActiveGroupCall, AlreadyJoinedError
+
 import yt_dlp
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
@@ -213,3 +216,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
