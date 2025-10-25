@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+
 import os
 import sys
 import asyncio
@@ -7,9 +8,7 @@ from collections import defaultdict
 from aiohttp import web
 from pyrogram import Client, filters
 from pyrogram.types import Message
-from pytgcalls import PyTgCalls
-from pytgcalls.types.input_stream import AudioPiped
-from pytgcalls.types.input_stream.quality import HighQualityAudio
+from tgcaller import TgCaller, AudioConfig
 import yt_dlp
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
@@ -25,7 +24,7 @@ PORT = int(os.getenv("PORT", 8080))
 # Clients
 app = Client("musicbot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 user = Client("assistant", api_id=API_ID, api_hash=API_HASH, session_string=SESSION_STRING) if SESSION_STRING else None
-calls = PyTgCalls(user if user else app)
+calls = TgCaller(user if user else app)
 
 # Queue
 queues = defaultdict(list)
@@ -59,8 +58,8 @@ async def get_link(query: str):
 # Play song
 async def play(cid: int, song: dict):
     try:
-        stream = AudioPiped(song['url'], audio_parameters=HighQualityAudio())
-        await calls.play(cid, stream)
+        audio_config = AudioConfig.high_quality()
+        await calls.play(cid, song['url'], audio_config=audio_config)
         playing[cid] = song
         logger.info(f"Playing: {song['title']}")
         return True
@@ -71,7 +70,7 @@ async def play(cid: int, song: dict):
 # Commands
 @app.on_message(filters.command("start"))
 async def start_cmd(c, m: Message):
-    await m.reply_text("🎵 Voice Chat Music Bot\n\nCommands:\n/play <song>\n/queue\n/skip\n/stop\n\nSetup:\n1. Make bot admin\n2. Start voice chat\n3. Use /play <song>")
+    await m.reply_text("🎵 Voice Chat Music Bot\n\nCommands:\n/play <song>\n/queue\n/skip\n/stop\n\nSetup:\n1. Make bot admin\n2. Start voice chat\n3. Use /play")
 
 @app.on_message(filters.command("play"))
 async def play_cmd(c, m: Message):
@@ -79,23 +78,24 @@ async def play_cmd(c, m: Message):
         if m.chat.type == "private":
             await m.reply_text("Use in groups only!")
             return
+
         if len(m.command) < 2:
-            await m.reply_text("Usage: /play <song>")
+            await m.reply_text("Usage: /play <song name>")
             return
-        
+
         query = m.text.split(None, 1)[1]
         cid = m.chat.id
         msg = await m.reply_text(f"🔍 Searching: {query}")
-        
+
         song = await get_link(query)
         if not song:
             await msg.edit_text("❌ Song not found!")
             return
-        
+
         song['by'] = m.from_user.mention or m.from_user.first_name
         queues[cid].append(song)
         pos = len(queues[cid])
-        
+
         if pos == 1:
             await msg.edit_text("🎵 Joining VC...")
             ok = await play(cid, song)
@@ -107,6 +107,7 @@ async def play_cmd(c, m: Message):
                 queues[cid].clear()
         else:
             await msg.edit_text(f"✅ Added to queue!\n{song['title']}\nPosition: #{pos}\nBy: {song['by']}")
+
     except Exception as e:
         logger.error(f"Play cmd error: {e}")
         await m.reply_text("❌ Error!")
@@ -118,11 +119,14 @@ async def queue_cmd(c, m: Message):
         if not q:
             await m.reply_text("📭 Queue is empty!")
             return
+
         txt = f"📋 Queue ({len(q)} songs):\n\n"
         for i, s in enumerate(q[:10], 1):
             txt += f"{'▶️' if i==1 else str(i)+'.'} {s['title']}\n"
+
         if len(q) > 10:
             txt += f"...{len(q)-10} more"
+
         await m.reply_text(txt)
     except Exception as e:
         logger.error(f"Queue error: {e}")
@@ -134,6 +138,7 @@ async def skip_cmd(c, m: Message):
         if not queues[cid]:
             await m.reply_text("❌ Nothing playing!")
             return
+
         queues[cid].pop(0)
         if queues[cid]:
             await play(cid, queues[cid][0])
@@ -186,29 +191,24 @@ async def main():
     logger.info("Starting Voice Chat Bot...")
     
     if not BOT_TOKEN or not API_ID or not API_HASH:
-        logger.error("Missing credentials!")
+        logger.error("❌ Missing: BOT_TOKEN, API_ID, or API_HASH")
         sys.exit(1)
-    
+
     if not SESSION_STRING:
-        logger.error("SESSION_STRING missing! Bot cannot join VC!")
-        logger.error("Generate it with: python generate_session.py")
+        logger.error("❌ SESSION_STRING missing!")
         sys.exit(1)
+
+    logger.info("✅ All credentials found!")
     
-    logger.info(f"BOT_TOKEN: {BOT_TOKEN[:20]}...")
-    logger.info(f"API_ID: {API_ID}")
-    logger.info(f"SESSION_STRING: Set")
-    
-    # Start web server
     web_runner = await start_web()
     await asyncio.sleep(1)
-    
-    # Start bot
+
     await app.start()
     if user and SESSION_STRING:
         await user.start()
-    await calls.start()
     
-    logger.info("✅ Bot ready!")
+    await calls.start()
+    logger.info("✅ Bot is READY!")
     await asyncio.Event().wait()
 
 if __name__ == "__main__":
